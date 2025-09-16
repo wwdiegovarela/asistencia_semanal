@@ -1,150 +1,264 @@
 # -*- coding: utf-8 -*-
 """
-Created on Tue Sep  2 16:36:25 2025
+Created on Wed Sep 10 17:19:13 2025
 
 @author: Diego
 """
 
+from fastapi import FastAPI, HTTPException
 import requests
-import json
-import pandas as pd
 from google.cloud import bigquery
+import json
+from datetime import datetime
+import pandas as pd
 import os
-import logging
 
-# Configurar logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-# Lista de turnos a excluir
-turnos_no = [
-    '+4x4   ', '+5x2   ', '+6x1   ', '+6x2   ', '+7x7   ',
-    'F      ', 'LME    ', 'LMPP   ', 'LMU    ', 'OS1    ',
-    'OS2    ', 'OS3    ', 'P1     ', 'P2     ', 'PL3    ',
-    'PL4    ', 'PL7    ', 'PNH    ', 'V1     ', 'IND3   ',
-    'IND2   ', 'PMA    '
-]
+# Configuración
+API_LOCAL_URL = os.getenv("API_LOCAL_URL")
+PROJECT_ID = os.getenv("PROJECT_ID")
+DATASET_ID = os.getenv("DATASET_ID")
+TABLE_ID = os.getenv("TABLE_ID")
+TOKEN = os.getenv("TOKEN_CR")
 
-def obtener_datos_controlroll(token):
-    """Obtiene datos de la API de ControlRoll"""
+def fetch_and_process_data():
+    """Función para obtener y procesar datos de la API externa"""
+    print("=== OBTENIENDO Y PROCESANDO DATOS ===")
+    
+    # Preparar parámetros para la API local
+    headers = {
+        "method": "report",
+        "token": TOKEN
+    }
+    print(f"API URL: {API_LOCAL_URL}")
+    print(f"Headers: {headers}")
+    
     try:
-        url = "https://cl.controlroll.com/ww01/ServiceUrl.aspx"
-        
-        headers = {
-            "method": "report",
-            "token": token
+        print("🔄 Iniciando llamada a ControlRoll...")
+        response = requests.get(API_LOCAL_URL, headers=headers, timeout=3600)
+        print("✅ Llamada completada")
+    except requests.exceptions.Timeout:
+        error_msg = "Timeout: La API externa tardó más de 1 hora en responder"
+        print(f"❌ {error_msg}")
+        raise HTTPException(status_code=504, detail=error_msg)
+    except requests.exceptions.ConnectionError as e:
+        error_msg = f"Error de conexión con la API externa: {str(e)}"
+        print(f"❌ {error_msg}")
+        raise HTTPException(status_code=502, detail=error_msg)
+    except requests.exceptions.RequestException as e:
+        error_msg = f"Error en la petición HTTP: {str(e)}"
+        print(f"❌ {error_msg}")
+        raise HTTPException(status_code=502, detail=error_msg)
+    except Exception as e:
+        error_msg = f"Error inesperado: {type(e).__name__}: {str(e)}"
+        print(f"❌ {error_msg}")
+        import traceback
+        print(f"❌ Stack trace: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=error_msg)
+    
+    print(f"Status code: {response.status_code}")
+    response.raise_for_status()
+    data_text = response.text
+    print(f"Longitud de respuesta: {len(data_text)}")
+    print(f"Primeros 200 caracteres: {data_text[:200]}")
+    
+    data_json = json.loads(data_text)
+    print(f"Datos obtenidos: {len(data_json)} registros")
+    print(f"Primer registro: {data_json[0] if data_json else 'No hay datos'}")
+    
+    if not data_json:
+        print("No hay datos para procesar")
+        return None
+
+    # Convertir a DataFrame
+    data_text = response.text
+    print(f"Longitud de respuesta: {len(data_text)}")
+    print(f"Primeros 200 caracteres: {data_text[:200]}")
+
+    data_json = json.loads(data_text)
+
+    # Convertir a DataFrame
+    data = pd.DataFrame(data_json)
+    date_columns = ['Her', 'FlogAsi','Hsr']
+    print("Transformando columnas a formato datetime")
+    for col in date_columns:
+        if col in data.columns:
+            data[col] = pd.to_datetime(data[col], format='%d-%m-%Y %H:%M:%S')
+            
+            
+    datetime_columns=['FechaMarcaEntrada','FechaMarcaSalida']
+    print("Transformando columnas a formato datetime")
+    for col in datetime_columns:
+        if col in data.columns:
+           data[col] = pd.to_datetime(data[col], format='%Y-%m-%d %H:%M:%S')
+
+
+
+    # Normalizar nombres de columnas
+    data.columns = data.columns.str.lower()
+    data.columns = data.columns.str.replace(' ', '_')
+    data.columns = data.columns.str.replace('.', '')
+    data.columns = data.columns.str.replace('%', '')
+    data.columns = data.columns.str.replace('-', '_')
+    data.columns = data.columns.str.replace('(', '')
+    data.columns = data.columns.str.replace(')', '')
+    data.columns = data.columns.str.replace('á', 'a')
+    data.columns = data.columns.str.replace('é', 'e')
+    data.columns = data.columns.str.replace('í', 'i')
+    data.columns = data.columns.str.replace('ó', 'o')
+    data.columns = data.columns.str.replace('ú', 'u')
+    data.columns = data.columns.str.replace('ñ', 'n')
+    data.columns = data.columns.str.replace('°', '')
+
+    number_columns=['hrtotrol','hrextpacrol','hrextpacasi','hr_tot_asi','hrextremasi','valortvf']
+    print("Transformando columnas a formato float")
+    for col in number_columns:
+        if col in data.columns:
+            data[col] = pd.to_numeric(
+                data[col].astype(str)                      # asegura string
+                         .str.replace(".", "", regex=False)  # quita miles
+                         .str.replace(",", ".", regex=False) # coma -> punto
+                         .str.strip(),                        # quita espacios
+                errors="coerce"
+            )
+
+    
+    # Procesar datos de rotación
+
+    print(f"✅ Datos procesados exitosamente: {len(data)} registros")
+    return data
+
+def load_to_bigquery(df_bridge):
+    """Función para cargar datos procesados a BigQuery"""
+    if df_bridge is None:
+        return {
+            "success": True,
+            "message": "No hay datos para cargar",
+            "records_processed": 0
         }
-        
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        
-        data_json = json.loads(response.text)
-        return pd.DataFrame(data_json)
-        
-    except Exception as e:
-        logger.error(f"Error obteniendo datos: {e}")
-        raise
-
-def procesar_dataframe(df):
-    """Procesa y limpia el DataFrame"""
+    
+    print("=== CARGANDO DATOS A BIGQUERY ===")
+    
     try:
-        # Filtrar turnos no deseados
-        df2 = df.loc[~df.Turno.isin(turnos_no)]
-        
-        # Limpiar columna HrTotRol
-        df2['HrTotRol'] = df2['HrTotRol'].str.replace(',', '.')
-        df2['HrTotRol'] = df2['HrTotRol'].astype(float)
-        
-        # Convertir columnas de fecha
-        df2['Her'] = pd.to_datetime(df2['Her'], format='%d-%m-%Y %H:%M:%S')
-        df2['Hsr'] = pd.to_datetime(df2['Hsr'], format='%d-%m-%Y %H:%M:%S')
-        df2['FlogAsi'] = pd.to_datetime(df2['FlogAsi'], format='%d-%m-%Y %H:%M:%S')
-        
-        logger.info(f"DataFrame procesado: {len(df2)} filas")
-        return df2
-        
-    except Exception as e:
-        logger.error(f"Error procesando DataFrame: {e}")
-        raise
-
-def cargar_a_bigquery(df, project_id, dataset_id, table_id):
-    """Carga DataFrame a BigQuery"""
-    try:
-        client = bigquery.Client(project=project_id)
-        table_ref = f"{project_id}.{dataset_id}.{table_id}"
+        client = bigquery.Client(project=PROJECT_ID)
+        table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
         
         job_config = bigquery.LoadJobConfig(
-            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-            autodetect=True
+            write_disposition="WRITE_TRUNCATE"
         )
         
-        job = client.load_table_from_dataframe(
-            df, 
-            table_ref, 
-            job_config=job_config
-        )
-        
+        print(f"🔄 Cargando {len(df_bridge)} registros a BigQuery: {table_id}")
+        job = client.load_table_from_dataframe(df_bridge, table_id, job_config=job_config)
         job.result()
         
-        logger.info(f"DataFrame cargado exitosamente a {table_ref}")
-        logger.info(f"Filas cargadas: {len(df)}")
+        print(f"✅ Data cargada exitosamente. {len(df_bridge)} registros cargados a BigQuery.")
         
-        return True
-        
+        return {
+            "success": True,
+            "message": "Data procesada y cargada exitosamente",
+            "records_processed": len(df_bridge)
+        }
     except Exception as e:
-        logger.error(f"Error al cargar a BigQuery: {e}")
-        return False
+        error_msg = f"Error al cargar datos en BigQuery: {type(e).__name__}: {str(e)}"
+        print(f"❌ {error_msg}")
+        import traceback
+        print(f"❌ Stack trace: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=error_msg)
 
-def main():
-    """Función principal"""
+def sync_to_bigquery():
+    """Función principal para sincronizar datos con BigQuery"""
+    print("=== INICIANDO SINCRONIZACIÓN COMPLETA ===")
     
-    # Configuración desde variables de entorno
-    token = os.getenv('CONTROLROLL_TOKEN', 'xMAOXmuzF8MeHi+qZLbgkd1Dg8WuzzHXi/eDMGNgO+8=')
-    PROJECT_ID = "worldwide-470917"
-    DATASET_ID = "worldwide_rrhh"
-    TABLE_ID = "Cobertura_WW"
+    # Paso 1: Obtener y procesar datos
+    df_bridge = fetch_and_process_data()
     
-    if not all([PROJECT_ID, DATASET_ID]):
-        raise ValueError("PROJECT_ID y DATASET_ID son requeridos")
+    # Paso 2: Cargar a BigQuery
+    result = load_to_bigquery(df_bridge)
     
-    try:
-        logger.info("Iniciando proceso...")
-        
-        # 1. Obtener datos de la API
-        logger.info("Obteniendo datos de ControlRoll...")
-        df = obtener_datos_controlroll(token)
-        logger.info(f"Datos obtenidos: {len(df)} filas")
-        
-        # 2. Procesar DataFrame
-        logger.info("Procesando datos...")
-        df2 = procesar_dataframe(df)
-        
-        # 3. Cargar a BigQuery
-        logger.info("Cargando a BigQuery...")
-        exito = cargar_a_bigquery(df2, PROJECT_ID, DATASET_ID, TABLE_ID)
-        
-        if exito:
-            logger.info("¡Proceso completado exitosamente!")
-            return {"status": "success", "rows_processed": len(df2)}
-        else:
-            logger.error("Error en la carga a BigQuery")
-            return {"status": "error", "message": "Falló la carga a BigQuery"}
-            
-    except Exception as e:
-        logger.error(f"Error en el proceso: {e}")
-        raise
+    return result
 
-# Para Cloud Run, necesitamos una función HTTP
-def controlroll_endpoint(request):
-    """Endpoint HTTP para Cloud Run"""
+# Crear la aplicación FastAPI
+app = FastAPI()
+
+@app.get("/")
+def root():
+    return {"message": "Servicio de sincronización de rotación activo"}
+
+@app.get("/health")
+def health_check():
+    """Endpoint de salud para verificar el estado del servicio"""
+    return {
+        "status": "healthy",
+        "message": "Servicio funcionando correctamente",
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.post("/fetch_data")
+def fetch_data():
+    """
+    Endpoint para obtener y procesar datos de la API externa (sin cargar a BigQuery)
+    """
     try:
-        result = main()
-        return result, 200
+        df_bridge = fetch_and_process_data()
+        if df_bridge is None:
+            return {
+                "success": True,
+                "message": "No hay datos para procesar",
+                "records_processed": 0
+            }
+        
+        return {
+            "success": True,
+            "message": "Datos obtenidos y procesados exitosamente",
+            "records_processed": len(df_bridge),
+            "columns": list(df_bridge.columns),
+            "sample_data": df_bridge.head(3).to_dict('records') if len(df_bridge) > 0 else []
+        }
     except Exception as e:
-        logger.error(f"Error en endpoint: {e}")
-        return {"error": str(e)}, 500
+        error_response = {
+            "success": False,
+            "error": str(e),
+            "message": "Error al obtener y procesar datos"
+        }
+        raise HTTPException(status_code=500, detail=error_response)
+
+@app.post("/load_data")
+def load_data():
+    """
+    Endpoint para cargar datos procesados a BigQuery
+    """
+    try:
+        # Primero obtener los datos
+        df_bridge = fetch_and_process_data()
+        
+        # Luego cargarlos a BigQuery
+        result = load_to_bigquery(df_bridge)
+        return result
+    except Exception as e:
+        error_response = {
+            "success": False,
+            "error": str(e),
+            "message": "Error al cargar datos a BigQuery"
+        }
+        raise HTTPException(status_code=500, detail=error_response)
+
+@app.post("/rotacion_sync")
+def rotacion_sync():
+    """
+    Endpoint para sincronizar datos de rotación (proceso completo)
+    """
+    try:
+        result = sync_to_bigquery()
+        return result
+    except Exception as e:
+        error_response = {
+            "success": False,
+            "error": str(e),
+            "message": "Error al procesar la sincronización"
+        }
+        raise HTTPException(status_code=500, detail=error_response)
 
 if __name__ == "__main__":
-    # Para ejecución local
-    result = main()
-    print(result)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+

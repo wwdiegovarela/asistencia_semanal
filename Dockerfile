@@ -1,18 +1,23 @@
-# Usar imagen base de Python
-FROM python:3.9-slim
+# Use the official Python runtime as a parent image
+FROM python:3.11-slim
 
-# Establecer directorio de trabajo
+# Set the working directory in the container
 WORKDIR /app
 
-# Copiar requirements e instalar dependencias
+# Copy the requirements file
 COPY requirements.txt .
+
+# Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar código de la aplicación
+# Copy the current directory contents into the container at /app
 COPY . .
 
-# Exponer puerto (Cloud Run usa 8080 por defecto)
+# Make port 8080 available to the world outside this container
 EXPOSE 8080
 
-# Comando para ejecutar la aplicación
+# Define environment variable
+ENV PORT=8080
+
+# Run the application
 CMD ["python", "main.py"]
