@@ -144,7 +144,7 @@ def load_to_bigquery(df_bridge):
         table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
         
         job_config = bigquery.LoadJobConfig(
-            write_disposition="WRITE_TRUNCATE"
+            write_disposition="WRITE_APPEND"
         )
         
         print(f"🔄 Cargando {len(df_bridge)} registros a BigQuery: {table_id}")
@@ -261,4 +261,5 @@ def rotacion_sync():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
 
