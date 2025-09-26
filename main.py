@@ -79,7 +79,7 @@ def fetch_and_process_data():
 
     # Convertir a DataFrame
     data = pd.DataFrame(data_json)
-    date_columns = ['Her', 'FlogAsi','Hsr']
+    date_columns = ['Her', 'FlogAsi','Hsr','Entrada', 'Salida']
     print("Transformando columnas a formato datetime")
     for col in date_columns:
         if col in data.columns:
@@ -144,7 +144,7 @@ def load_to_bigquery(df_bridge):
         table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
         
         job_config = bigquery.LoadJobConfig(
-            write_disposition="WRITE_APPEND"
+            write_disposition="WRITE_TRUNCATE"
         )
         
         print(f"🔄 Cargando {len(df_bridge)} registros a BigQuery: {table_id}")
@@ -261,5 +261,6 @@ def rotacion_sync():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
 
 
