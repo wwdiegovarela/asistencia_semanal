@@ -145,8 +145,10 @@ def load_to_bigquery(df_bridge):
         
         job_config = bigquery.LoadJobConfig(
             write_disposition="WRITE_TRUNCATE",
-            type_=bigquery.TimePartitioningType.DAY,  # partición diaria
-        field="dia"
+            time_partitioning=bigquery.TimePartitioning(
+                type_=bigquery.TimePartitioningType.DAY,
+                field="dia"  # <- AQUÍ va el campo de partición
+            ),
         )
         
         print(f"🔄 Cargando {len(df_bridge)} registros a BigQuery: {table_id}")
@@ -263,6 +265,7 @@ def rotacion_sync():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
 
 
 
