@@ -12,7 +12,7 @@ import json
 from datetime import datetime
 import pandas as pd
 import os
-
+from google.cloud import bigquery
 
 # Configuración
 API_LOCAL_URL = os.getenv("API_LOCAL_URL")
@@ -20,6 +20,33 @@ PROJECT_ID = os.getenv("PROJECT_ID")
 DATASET_ID = os.getenv("DATASET_ID")
 TABLE_ID = os.getenv("TABLE_ID")
 TOKEN = os.getenv("TOKEN_CR")
+
+def delete_range_in_bigquery(client: bigquery.Client, table_id: str, start_date, end_date) -> int:
+    """
+    Elimina en BigQuery todas las filas cuyo campo `dia` (cast a DATE)
+    esté entre start_date y end_date (inclusive).
+    """
+    if start_date is None or end_date is None:
+        print("⚠️ Rango de fechas no válido. Se omite la eliminación.")
+        return 0
+
+    sql = f"""
+    DELETE FROM `{table_id}`
+    WHERE DATE(dia) BETWEEN @start_date AND @end_date
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("start_date", "DATE", start_date),
+            bigquery.ScalarQueryParameter("end_date", "DATE", end_date),
+        ]
+    )
+    print(f"🧹 Eliminando en destino: DATE(dia) BETWEEN {start_date} AND {end_date}")
+    job = client.query(sql, job_config=job_config)
+    job.result()  # espera a que termine
+
+    deleted = job.num_dml_affected_rows or 0
+    print(f"✅ Filas eliminadas: {deleted}")
+    return deleted
 
 def fetch_and_process_data():
     """Función para obtener y procesar datos de la API externa"""
@@ -129,39 +156,70 @@ def fetch_and_process_data():
     return data
 
 def load_to_bigquery(df_bridge):
-    """Función para cargar datos procesados a BigQuery"""
+    """Función para cargar datos procesados a BigQuery (reemplazo por rango)."""
     if df_bridge is None:
         return {
             "success": True,
             "message": "No hay datos para cargar",
             "records_processed": 0
         }
-    
+
     print("=== CARGANDO DATOS A BIGQUERY ===")
-    
+
     try:
         client = bigquery.Client(project=PROJECT_ID)
         table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
-        
+
+        # ===================== NUEVO: obtener min/max de 'dia' =====================
+        if 'dia' not in df_bridge.columns:
+            raise HTTPException(status_code=400, detail="La columna 'dia' no existe en los datos a cargar.")
+
+        # Asegura tipo datetime y toma solo la fecha (para BQ como DATE)
+        if not pd.api.types.is_datetime64_any_dtype(df_bridge['dia']):
+            df_bridge['dia'] = pd.to_datetime(df_bridge['dia'], errors='coerce')
+
+        if df_bridge['dia'].isna().all():
+            raise HTTPException(status_code=400, detail="La columna 'dia' no contiene fechas válidas.")
+
+        start_date = df_bridge['dia'].dt.date.min()
+        end_date   = df_bridge['dia'].dt.date.max()
+
+        print(f"🗓️ Rango detectado en origen: {start_date} → {end_date}")
+
+        # Borra en destino el rango a sustituir (incluye extremos)
+        deleted_rows = delete_range_in_bigquery(client, table_id, start_date, end_date)
+        # ==========================================================================
+
+        # Configuración de carga (append porque ya realizamos el “reemplazo”)
         job_config = bigquery.LoadJobConfig(
             write_disposition="WRITE_APPEND",
             time_partitioning=bigquery.TimePartitioning(
                 type_=bigquery.TimePartitioningType.DAY,
-                field="dia"  # <- AQUÍ va el campo de partición
+                field="dia"  # campo de partición
             ),
         )
-        
+
         print(f"🔄 Cargando {len(df_bridge)} registros a BigQuery: {table_id}")
         job = client.load_table_from_dataframe(df_bridge, table_id, job_config=job_config)
         job.result()
-        
+
         print(f"✅ Data cargada exitosamente. {len(df_bridge)} registros cargados a BigQuery.")
-        
+
         return {
             "success": True,
-            "message": "Data procesada y cargada exitosamente",
-            "records_processed": len(df_bridge)
+            "message": (
+                f"Data procesada y cargada exitosamente. "
+                f"Se eliminaron {deleted_rows} filas previas en el rango {start_date} a {end_date}."
+            ),
+            "records_processed": len(df_bridge),
+            "deleted_rows": int(deleted_rows),
+            "range_start": str(start_date),
+            "range_end": str(end_date)
         }
+
+    except HTTPException:
+        # Relevantar tal cual si ya es HTTPException
+        raise
     except Exception as e:
         error_msg = f"Error al cargar datos en BigQuery: {type(e).__name__}: {str(e)}"
         print(f"❌ {error_msg}")
@@ -265,6 +323,7 @@ def rotacion_sync():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
 
 
 
