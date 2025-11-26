@@ -12,7 +12,6 @@ import json
 from datetime import datetime
 import pandas as pd
 import os
-from google.cloud import bigquery
 
 # Configuración
 API_LOCAL_URL = os.getenv("API_LOCAL_URL")
@@ -20,6 +19,7 @@ PROJECT_ID = os.getenv("PROJECT_ID")
 DATASET_ID = os.getenv("DATASET_ID")
 TABLE_ID = os.getenv("TABLE_ID")
 TOKEN = os.getenv("TOKEN_CR")
+TOKEN_INDUSTRY = os.getenv("TOKEN_CR_INDUSTRY")
 
 def delete_range_in_bigquery(client: bigquery.Client, table_id: str, start_date, end_date) -> int:
     """
@@ -48,18 +48,62 @@ def delete_range_in_bigquery(client: bigquery.Client, table_id: str, start_date,
     print(f"✅ Filas eliminadas: {deleted}")
     return deleted
 
-def fetch_and_process_data():
-    """Función para obtener y procesar datos de la API externa"""
-    print("=== OBTENIENDO Y PROCESANDO DATOS ===")
-    
-    # Preparar parámetros para la API local
-    headers = {
-        "method": "report",
-        "token": TOKEN
-    }
+def _transform_to_dataframe(data_json, empresa_label: str) -> pd.DataFrame | None:
+    if not data_json:
+        return None
+    # Convertir a DataFrame
+    data = pd.DataFrame(data_json)
+
+    # Fechas con formato dd-mm-YYYY HH:MM:SS
+    date_columns = ['Her', 'FlogAsi','Hsr','Entrada', 'Salida','Dia']
+    print("Transformando columnas a formato datetime (DD-MM-YYYY HH:MM:SS)")
+    for col in date_columns:
+        if col in data.columns:
+            data[col] = pd.to_datetime(data[col], format='%d-%m-%Y %H:%M:%S', errors='coerce')
+
+    # Fechas con formato YYYY-MM-DD HH:MM:SS
+    datetime_columns=['FechaMarcaEntrada','FechaMarcaSalida']
+    print("Transformando columnas a formato datetime (YYYY-MM-DD HH:MM:SS)")
+    for col in datetime_columns:
+        if col in data.columns:
+            data[col] = pd.to_datetime(data[col], format='%Y-%m-%d %H:%M:%S', errors='coerce')
+
+    # Normalizar nombres de columnas
+    data.columns = data.columns.str.lower()
+    data.columns = data.columns.str.replace(' ', '_')
+    data.columns = data.columns.str.replace('.', '')
+    data.columns = data.columns.str.replace('%', '')
+    data.columns = data.columns.str.replace('-', '_')
+    data.columns = data.columns.str.replace('(', '')
+    data.columns = data.columns.str.replace(')', '')
+    data.columns = data.columns.str.replace('á', 'a')
+    data.columns = data.columns.str.replace('é', 'e')
+    data.columns = data.columns.str.replace('í', 'i')
+    data.columns = data.columns.str.replace('ó', 'o')
+    data.columns = data.columns.str.replace('ú', 'u')
+    data.columns = data.columns.str.replace('ñ', 'n')
+    data.columns = data.columns.str.replace('°', '')
+
+    # Números con miles y coma decimal
+    number_columns=['hrtotrol','hrextpacrol','hrextpacasi','hr_tot_asi','hrextremasi','valortvf']
+    print("Transformando columnas a formato float")
+    for col in number_columns:
+        if col in data.columns:
+            data[col] = pd.to_numeric(
+                data[col].astype(str).str.replace(".", "", regex=False).str.replace(",", ".", regex=False).str.strip(),
+                errors="coerce"
+            )
+
+    # Agregar etiqueta de empresa
+    data["empresa"] = empresa_label
+
+    print(f"✅ Datos transformados ({empresa_label}): {len(data)} registros")
+    return data
+
+def _fetch_from_api(token: str) -> list:
+    headers = {"method": "report", "token": token}
     print(f"API URL: {API_LOCAL_URL}")
-    print(f"Headers: {headers}")
-    
+    print(f"Headers: {{'method': 'report', 'token': '***'}}")
     try:
         print("🔄 Iniciando llamada a ControlRoll...")
         response = requests.get(API_LOCAL_URL, headers=headers, timeout=3600)
@@ -88,72 +132,39 @@ def fetch_and_process_data():
     data_text = response.text
     print(f"Longitud de respuesta: {len(data_text)}")
     print(f"Primeros 200 caracteres: {data_text[:200]}")
-    
+
     data_json = json.loads(data_text)
     print(f"Datos obtenidos: {len(data_json)} registros")
     print(f"Primer registro: {data_json[0] if data_json else 'No hay datos'}")
-    
+    return data_json
+
+def _fetch_and_process_for_token(token: str | None, empresa_label: str) -> pd.DataFrame | None:
+    if not token:
+        print(f"⚠️ Token no definido para {empresa_label}. Se omite esta fuente.")
+        return None
+    data_json = _fetch_from_api(token)
     if not data_json:
-        print("No hay datos para procesar")
+        print(f"⚠️ Fuente sin datos para {empresa_label}.")
+        return None
+    return _transform_to_dataframe(data_json, empresa_label)
+
+def fetch_and_process_data():
+    """Obtiene y procesa datos desde dos fuentes y las combina antes de cargar."""
+    print("=== OBTENIENDO Y PROCESANDO DATOS (2 FUENTES) ===")
+
+    # Fuente Security (token original)
+    df_security = _fetch_and_process_for_token(TOKEN, "Security")
+    # Fuente Industry (nuevo token)
+    df_industry = _fetch_and_process_for_token(TOKEN_INDUSTRY, "Industry")
+
+    if df_security is None and df_industry is None:
+        print("No hay datos para procesar de ninguna fuente")
         return None
 
-    # Convertir a DataFrame
-    data_text = response.text
-    print(f"Longitud de respuesta: {len(data_text)}")
-    print(f"Primeros 200 caracteres: {data_text[:200]}")
-
-    data_json = json.loads(data_text)
-
-    # Convertir a DataFrame
-    data = pd.DataFrame(data_json)
-    date_columns = ['Her', 'FlogAsi','Hsr','Entrada', 'Salida','Dia']
-    print("Transformando columnas a formato datetime")
-    for col in date_columns:
-        if col in data.columns:
-            data[col] = pd.to_datetime(data[col], format='%d-%m-%Y %H:%M:%S')
-            
-            
-    datetime_columns=['FechaMarcaEntrada','FechaMarcaSalida']
-    print("Transformando columnas a formato datetime")
-    for col in datetime_columns:
-        if col in data.columns:
-           data[col] = pd.to_datetime(data[col], format='%Y-%m-%d %H:%M:%S')
-
-
-
-    # Normalizar nombres de columnas
-    data.columns = data.columns.str.lower()
-    data.columns = data.columns.str.replace(' ', '_')
-    data.columns = data.columns.str.replace('.', '')
-    data.columns = data.columns.str.replace('%', '')
-    data.columns = data.columns.str.replace('-', '_')
-    data.columns = data.columns.str.replace('(', '')
-    data.columns = data.columns.str.replace(')', '')
-    data.columns = data.columns.str.replace('á', 'a')
-    data.columns = data.columns.str.replace('é', 'e')
-    data.columns = data.columns.str.replace('í', 'i')
-    data.columns = data.columns.str.replace('ó', 'o')
-    data.columns = data.columns.str.replace('ú', 'u')
-    data.columns = data.columns.str.replace('ñ', 'n')
-    data.columns = data.columns.str.replace('°', '')
-
-    number_columns=['hrtotrol','hrextpacrol','hrextpacasi','hr_tot_asi','hrextremasi','valortvf']
-    print("Transformando columnas a formato float")
-    for col in number_columns:
-        if col in data.columns:
-            data[col] = pd.to_numeric(
-                data[col].astype(str)                      # asegura string
-                         .str.replace(".", "", regex=False)  # quita miles
-                         .str.replace(",", ".", regex=False) # coma -> punto
-                         .str.strip(),                        # quita espacios
-                errors="coerce"
-            )
-
-    
-    # Procesar datos de rotación
-
-    print(f"✅ Datos procesados exitosamente: {len(data)} registros")
-    return data
+    frames = [df for df in [df_security, df_industry] if df is not None]
+    combined = pd.concat(frames, ignore_index=True)
+    print(f"✅ Datos combinados total: {len(combined)} registros")
+    return combined
 
 def load_to_bigquery(df_bridge):
     """Función para cargar datos procesados a BigQuery (reemplazo por rango)."""
