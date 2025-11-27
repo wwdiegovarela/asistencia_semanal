@@ -212,6 +212,11 @@ def load_to_bigquery(df_bridge, delete_before_load: bool = True):
                 type_=bigquery.TimePartitioningType.DAY,
                 field="dia"  # campo de partición
             ),
+            autodetect=True,  # permite crear tabla si no existe y detectar tipos
+            schema_update_options=[
+                bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION,  # permite agregar nuevas columnas (e.g., empresa)
+                bigquery.SchemaUpdateOption.ALLOW_FIELD_RELAXATION,  # permite relajar modos REQUIRED -> NULLABLE si aplica
+            ],
         )
 
         print(f"🔄 Cargando {len(df_bridge)} registros a BigQuery: {table_id}")
@@ -291,6 +296,9 @@ def fetch_data():
             "columns": list(df_bridge.columns),
             "sample_data": df_bridge.head(3).to_dict('records') if len(df_bridge) > 0 else []
         }
+    except HTTPException as e:
+        # Permite propagar códigos HTTP específicos
+        raise e
     except Exception as e:
         error_response = {
             "success": False,
@@ -311,6 +319,8 @@ def load_data():
         # Luego cargarlos a BigQuery
         result = load_to_bigquery(df_bridge)
         return result
+    except HTTPException as e:
+        raise e
     except Exception as e:
         error_response = {
             "success": False,
@@ -330,6 +340,8 @@ def industry_load():
         # Cargar a BigQuery (maneja df_bridge None internamente)
         result = load_to_bigquery(df_bridge, delete_before_load=False)
         return result
+    except HTTPException as e:
+        raise e
     except Exception as e:
         error_response = {
             "success": False,
@@ -346,6 +358,8 @@ def rotacion_sync():
     try:
         result = sync_to_bigquery()
         return result
+    except HTTPException as e:
+        raise e
     except Exception as e:
         error_response = {
             "success": False,
