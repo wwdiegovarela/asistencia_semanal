@@ -76,6 +76,7 @@ https://asistencia-semanal-xxxxxxxx-uc.a.run.app
 - `GET /health` - Healthcheck con timestamp
 - `POST /fetch_data` - Obtiene y transforma datos (no carga a BQ)
 - `POST /load_data` - Obtiene y carga a BigQuery (reemplazo por rango + append)
+- `POST /industry_load` - Obtiene solo Industry y carga a BigQuery
 - `POST /rotacion_sync` - Proceso completo: fetch -> load
 
 Ejemplos:
@@ -84,6 +85,7 @@ Ejemplos:
 curl -X GET  https://TU_URL/health
 curl -X POST https://TU_URL/fetch_data
 curl -X POST https://TU_URL/load_data
+curl -X POST https://TU_URL/industry_load
 curl -X POST https://TU_URL/rotacion_sync
 ```
 

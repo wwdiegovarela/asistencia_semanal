@@ -315,6 +315,25 @@ def load_data():
         }
         raise HTTPException(status_code=500, detail=error_response)
 
+@app.post("/industry_load")
+def industry_load():
+    """
+    Endpoint para cargar solo datos de Industry a BigQuery
+    """
+    try:
+        # Obtener y procesar únicamente Industry
+        df_bridge = _fetch_and_process_for_token(TOKEN_INDUSTRY, "Industry")
+        # Cargar a BigQuery (maneja df_bridge None internamente)
+        result = load_to_bigquery(df_bridge)
+        return result
+    except Exception as e:
+        error_response = {
+            "success": False,
+            "error": str(e),
+            "message": "Error al cargar datos de Industry a BigQuery"
+        }
+        raise HTTPException(status_code=500, detail=error_response)
+
 @app.post("/rotacion_sync")
 def rotacion_sync():
     """
