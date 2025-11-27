@@ -166,7 +166,7 @@ def fetch_and_process_data():
     print(f"✅ Datos combinados total: {len(combined)} registros")
     return combined
 
-def load_to_bigquery(df_bridge):
+def load_to_bigquery(df_bridge, delete_before_load: bool = True):
     """Función para cargar datos procesados a BigQuery (reemplazo por rango)."""
     if df_bridge is None:
         return {
@@ -197,8 +197,12 @@ def load_to_bigquery(df_bridge):
 
         print(f"🗓️ Rango detectado en origen: {start_date} → {end_date}")
 
-        # Borra en destino el rango a sustituir (incluye extremos)
-        deleted_rows = delete_range_in_bigquery(client, table_id, start_date, end_date)
+        # Borra en destino el rango a sustituir (incluye extremos) si corresponde
+        if delete_before_load:
+            deleted_rows = delete_range_in_bigquery(client, table_id, start_date, end_date)
+        else:
+            print("🧹 Salteando eliminación previa en BigQuery (modo append-only).")
+            deleted_rows = 0
         # ==========================================================================
 
         # Configuración de carga (append porque ya realizamos el “reemplazo”)
@@ -324,7 +328,7 @@ def industry_load():
         # Obtener y procesar únicamente Industry
         df_bridge = _fetch_and_process_for_token(TOKEN_INDUSTRY, "Industry")
         # Cargar a BigQuery (maneja df_bridge None internamente)
-        result = load_to_bigquery(df_bridge)
+        result = load_to_bigquery(df_bridge, delete_before_load=False)
         return result
     except Exception as e:
         error_response = {
