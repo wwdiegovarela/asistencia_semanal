@@ -133,10 +133,31 @@ def _fetch_from_api(token: str) -> list:
     print(f"Longitud de respuesta: {len(data_text)}")
     print(f"Primeros 200 caracteres: {data_text[:200]}")
 
-    data_json = json.loads(data_text)
-    print(f"Datos obtenidos: {len(data_json)} registros")
-    print(f"Primer registro: {data_json[0] if data_json else 'No hay datos'}")
-    return data_json
+    # Intentar JSON primero; si falla, intentar parsear HTML <table> a registros
+    content_type = (response.headers.get("Content-Type") or "").lower()
+    try:
+        data_json = json.loads(data_text)
+        print(f"Datos obtenidos (JSON): {len(data_json)} registros")
+        print(f"Primer registro: {data_json[0] if data_json else 'No hay datos'}")
+        return data_json
+    except json.JSONDecodeError:
+        pass
+
+    try:
+        import pandas as pd  # ya importado globalmente, pero asegura disponibilidad en runtime
+        print("⚠️ Respuesta no es JSON. Intentando parseo de tabla HTML con pandas.read_html...")
+        tables = pd.read_html(data_text)
+        if not tables:
+            raise ValueError("No se encontraron tablas HTML en la respuesta")
+        df_html = tables[0]
+        records = df_html.to_dict("records")
+        print(f"Datos obtenidos (HTML tabla): {len(records)} registros")
+        print(f"Primer registro: {records[0] if records else 'No hay datos'}")
+        return records
+    except Exception as e:
+        error_msg = f"Formato de respuesta no soportado o parseo fallido: {type(e).__name__}: {str(e)}"
+        print(f"❌ {error_msg}")
+        raise HTTPException(status_code=502, detail=error_msg)
 
 def _fetch_and_process_for_token(token: str | None, empresa_label: str) -> pd.DataFrame | None:
     if not token:
